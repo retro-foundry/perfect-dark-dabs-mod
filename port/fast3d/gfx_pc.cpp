@@ -1940,6 +1940,26 @@ extern "C" EMSCRIPTEN_KEEPALIVE uint32_t webGfxInterpolationModelMatrixCount(voi
     return (uint32_t)frame_interpolation.model_matrices.size();
 }
 
+// What every matrix load on a game frame did, for measuring: a load that snaps
+// where its neighbours sweep is what a flicker is made of, so these say how
+// often that happens and to which kind of matrix.
+static uint32_t interp_stat[8];
+
+enum {
+    INTERP_STAT_APPLIED,
+    INTERP_STAT_NO_HISTORY,
+    INTERP_STAT_UNRELATED,
+    INTERP_STAT_REGISTERED,
+    INTERP_STAT_REGISTERED_SNAPPED,
+    INTERP_STAT_PROJECTION,
+    INTERP_STAT_PROJECTION_SNAPPED,
+    INTERP_STAT_LOADS,
+};
+
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t webGfxInterpolationStat(uint32_t which) {
+    return which < 8 ? interp_stat[which] : 0;
+}
+
 static uintptr_t gfx_interpolation_matrix_address(const int32_t* addr) {
     const uintptr_t address = (uintptr_t)addr;
     const uintptr_t pool_size = (uintptr_t)frame_interpolation.pool_stride * 2;
@@ -2037,6 +2057,18 @@ static void gfx_interpolate_matrix(uint8_t parameters, const int32_t* addr, floa
         return;
     }
 
+    const bool counting = frame_interpolation.new_game_frame;
+
+    if (counting) {
+        interp_stat[INTERP_STAT_LOADS]++;
+        if (registered) {
+            interp_stat[INTERP_STAT_REGISTERED]++;
+        }
+        if (parameters & G_MTX_PROJECTION) {
+            interp_stat[INTERP_STAT_PROJECTION]++;
+        }
+    }
+
     auto history_it = frame_interpolation.matrices.find(key);
 
     if (frame_interpolation.new_game_frame) {
@@ -2062,15 +2094,43 @@ static void gfx_interpolate_matrix(uint8_t parameters, const int32_t* addr, floa
     }
 
     if (history_it == frame_interpolation.matrices.end()) {
+        if (counting) {
+            interp_stat[INTERP_STAT_NO_HISTORY]++;
+        }
         return;
     }
 
     const InterpolationMatrixHistory& history = history_it->second;
 
     if (history.current_generation != frame_interpolation.game_frame_generation
-            || history.previous_generation + 1 != history.current_generation
-            || !gfx_interpolation_matrices_are_related(history.previous, history.current)) {
+            || history.previous_generation + 1 != history.current_generation) {
+        if (counting) {
+            interp_stat[INTERP_STAT_NO_HISTORY]++;
+            if (registered) {
+                interp_stat[INTERP_STAT_REGISTERED_SNAPPED]++;
+            }
+            if (parameters & G_MTX_PROJECTION) {
+                interp_stat[INTERP_STAT_PROJECTION_SNAPPED]++;
+            }
+        }
         return;
+    }
+
+    if (!gfx_interpolation_matrices_are_related(history.previous, history.current)) {
+        if (counting) {
+            interp_stat[INTERP_STAT_UNRELATED]++;
+            if (registered) {
+                interp_stat[INTERP_STAT_REGISTERED_SNAPPED]++;
+            }
+            if (parameters & G_MTX_PROJECTION) {
+                interp_stat[INTERP_STAT_PROJECTION_SNAPPED]++;
+            }
+        }
+        return;
+    }
+
+    if (counting) {
+        interp_stat[INTERP_STAT_APPLIED]++;
     }
 
     for (int row = 0; row < 4; row++) {
@@ -2094,6 +2154,69 @@ extern "C" void gfx_begin_game_frame_interpolation(void) {
         frame_interpolation.matrices.clear();
         frame_interpolation.model_matrices.clear();
         frame_interpolation.game_frame_generation = 1;
+    }
+}
+
+/**
+ * The LookAt, swept the way a matrix is.
+ *
+ * Every reflection the levels draw is aimed by this: the rooms load a
+ * modelview holding nothing but the room's offset, so the texgen's lookup is
+ * the LookAt's own directions and nothing else. It is built once a tick from
+ * the camera (playerUpdateCameraFrustum's gfxAllocateLookAt) and reaches us
+ * through gSPLookAt, so on its own it steps once a tick while the wall it is
+ * painted on now moves at the display's rate. Swept from the tick before to
+ * the current one by the same alpha as the matrices, so at alpha 0 - the game
+ * frame, which draws the previous tick - the two agree.
+ */
+struct InterpolationLookAtHistory {
+    float previous[3];
+    float current[3];
+    uint64_t previous_generation = 0;
+    uint64_t current_generation = 0;
+};
+
+static InterpolationLookAtHistory lookat_history[2];
+
+static void gfx_interpolate_lookat(int index) {
+    if (!frame_interpolation.enabled) {
+        return;
+    }
+
+    InterpolationLookAtHistory& history = lookat_history[index];
+
+    if (frame_interpolation.new_game_frame) {
+        if (history.current_generation != frame_interpolation.game_frame_generation) {
+            if (history.current_generation != 0
+                    && history.current_generation + 1 == frame_interpolation.game_frame_generation) {
+                memcpy(history.previous, history.current, sizeof(history.previous));
+                history.previous_generation = history.current_generation;
+            } else {
+                history.previous_generation = 0;
+            }
+
+            history.current_generation = frame_interpolation.game_frame_generation;
+        }
+
+        for (int c = 0; c < 3; c++) {
+            history.current[c] = rsp.lookat[index].dir[c];
+        }
+    }
+
+    if (history.current_generation != frame_interpolation.game_frame_generation
+            || history.previous_generation + 1 != history.current_generation) {
+        return;
+    }
+
+    for (int c = 0; c < 3; c++) {
+        const float swept = history.previous[c]
+                + (history.current[c] - history.previous[c]) * frame_interpolation.alpha;
+        const float clamped = swept < -128.f ? -128.f : (swept > 127.f ? 127.f : swept);
+
+        // Not renormalised: calculate_normal_dir() normalises what it is
+        // handed, which is where the shortening a linear sweep leaves comes
+        // back out.
+        rsp.lookat[index].dir[c] = (int8_t)lrintf(clamped);
     }
 }
 
@@ -2152,6 +2275,7 @@ extern "C" void gfx_reset_frame_interpolation(void) {
     frame_interpolation.game_frame_generation = 0;
     frame_interpolation.matrices.clear();
     frame_interpolation.model_matrices.clear();
+    memset(lookat_history, 0, sizeof(lookat_history));
 }
 #endif
 
@@ -3507,7 +3631,13 @@ static void gfx_sp_movemem(uint8_t index, uint8_t offset, const void* data) {
             // I think this is only really used for guLookAtReflect
             index = !((index - G_MV_LOOKATY) / 2);
             rsp.lookat[index] = ((const Light *)data)->l;
+            // Decided on the tick's own value rather than the swept one, so a
+            // direction sweeping through zero cannot turn the pass on and off
+            // within a tick.
             rsp.lookat_enabled = (index == 0) || (rsp.lookat[1].dir[0] || rsp.lookat[1].dir[1]);
+#ifdef PLATFORM_WEB
+            gfx_interpolate_lookat(index);
+#endif
             rsp.lights_changed = true;
             break;
         case G_MV_L0:
