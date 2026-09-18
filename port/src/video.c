@@ -45,6 +45,11 @@ static s32 vidAllowHiDpi = false;
 static s32 vidVsync = 1;
 static s32 vidMSAA = 1;
 static s32 vidFramerateLimit = 0;
+#ifdef PLATFORM_WEB
+static s32 vidDecoupledRendering = true;
+static Gfx *vidReplayCommands = NULL;
+extern u8 *g_VtxBuffers[3];
+#endif
 
 static s32 vidDisplayFPS = 0;
 static f32 vidDisplayFPSInterval = 1.f;
@@ -134,10 +139,71 @@ void videoStartFrame(void)
 void videoSubmitCommands(Gfx *cmds)
 {
 	if (initDone) {
+#ifdef PLATFORM_WEB
+		if (vidDecoupledRendering && g_VtxBuffers[0] && g_VtxBuffers[1] > g_VtxBuffers[0]) {
+			gfx_set_frame_interpolation(true, true, 0.f, (uintptr_t)g_VtxBuffers[0],
+					(u32)(g_VtxBuffers[1] - g_VtxBuffers[0]));
+			vidReplayCommands = cmds;
+		} else {
+			gfx_reset_frame_interpolation();
+			vidReplayCommands = NULL;
+		}
+#endif
 		gfx_run(cmds);
 		++dlcount;
 	}
 }
+
+#ifdef PLATFORM_WEB
+s32 videoGetDecoupledRendering(void)
+{
+	return vidDecoupledRendering;
+}
+
+void videoSetDecoupledRendering(s32 enabled)
+{
+	vidDecoupledRendering = enabled;
+
+	if (!enabled) {
+		videoDiscardReplayFrame();
+	}
+}
+
+void videoBeginGameFrameInterpolation(void)
+{
+	if (vidDecoupledRendering) {
+		gfx_begin_game_frame_interpolation();
+	}
+}
+
+void videoRegisterInterpolationModel(const void *matrices, u32 count, const void *owner)
+{
+	if (vidDecoupledRendering) {
+		gfx_register_interpolation_model(matrices, count, owner);
+	}
+}
+
+s32 videoReplayLastFrame(f32 alpha)
+{
+	if (!initDone || !vidDecoupledRendering || !vidReplayCommands) {
+		return false;
+	}
+
+	videoStartFrame();
+	gfx_set_frame_interpolation(true, false, alpha, (uintptr_t)g_VtxBuffers[0],
+			(u32)(g_VtxBuffers[1] - g_VtxBuffers[0]));
+	gfx_run(vidReplayCommands);
+	++dlcount;
+	videoEndFrame();
+	return true;
+}
+
+void videoDiscardReplayFrame(void)
+{
+	vidReplayCommands = NULL;
+	gfx_reset_frame_interpolation();
+}
+#endif
 
 void videoEndFrame(void)
 {
@@ -783,6 +849,9 @@ void videoFreeCachedTextures(const void *start, const void *end)
 
 void videoShutdown(void)
 {
+#ifdef PLATFORM_WEB
+	videoDiscardReplayFrame();
+#endif
 	free(vidModes);
 }
 
@@ -798,6 +867,9 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.VSync", &vidVsync, -1, 10);
 	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
 	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, VIDEO_MAX_FPS);
+#ifdef PLATFORM_WEB
+	configRegisterInt("Video.DecoupledRendering", &vidDecoupledRendering, 0, 1);
+#endif
 	configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
 	configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);
 	configRegisterInt("Video.MSAA", &vidMSAA, 1, 16);

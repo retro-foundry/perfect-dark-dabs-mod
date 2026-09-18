@@ -1817,6 +1817,198 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+#ifdef PLATFORM_WEB
+struct InterpolationMatrixKey {
+    uintptr_t owner;
+    uintptr_t address;
+    uint8_t parameters;
+
+    bool operator==(const InterpolationMatrixKey& other) const {
+        return owner == other.owner && address == other.address && parameters == other.parameters;
+    }
+};
+
+struct InterpolationMatrixKeyHash {
+    size_t operator()(const InterpolationMatrixKey& key) const {
+        const size_t owner_hash = std::hash<uintptr_t>{}(key.owner);
+        const size_t address_hash = std::hash<uintptr_t>{}(key.address);
+        return owner_hash ^ (address_hash << 1) ^ ((size_t)key.parameters << 2);
+    }
+};
+
+struct InterpolationModelMatrix {
+    uintptr_t owner;
+    uint32_t index;
+};
+
+struct InterpolationMatrix {
+    float m[4][4];
+};
+
+struct FrameInterpolationState {
+    bool enabled = false;
+    bool new_game_frame = false;
+    float alpha = 0.f;
+    uintptr_t pool_base = 0;
+    uint32_t pool_stride = 0;
+    std::unordered_map<InterpolationMatrixKey, InterpolationMatrix, InterpolationMatrixKeyHash> previous;
+    std::unordered_map<InterpolationMatrixKey, InterpolationMatrix, InterpolationMatrixKeyHash> current;
+    std::unordered_map<uintptr_t, InterpolationModelMatrix> model_matrices;
+};
+
+static FrameInterpolationState frame_interpolation;
+
+static uintptr_t gfx_interpolation_matrix_address(const int32_t* addr) {
+    const uintptr_t address = (uintptr_t)addr;
+    const uintptr_t pool_size = (uintptr_t)frame_interpolation.pool_stride * 2;
+
+    if (frame_interpolation.pool_base && address >= frame_interpolation.pool_base
+            && address < frame_interpolation.pool_base + pool_size) {
+        // The game alternates between two equal vertex/matrix pools. Matching
+        // their logical offsets lets the same allocation match across ticks.
+        return (uintptr_t(1) << (sizeof(uintptr_t) * 8 - 1))
+                | ((address - frame_interpolation.pool_base) % frame_interpolation.pool_stride);
+    }
+
+    return address;
+}
+
+static InterpolationMatrixKey gfx_interpolation_matrix_key(uint8_t parameters, const int32_t* addr) {
+    const auto model_it = frame_interpolation.model_matrices.find((uintptr_t)addr);
+
+    if (model_it != frame_interpolation.model_matrices.end()) {
+        return {
+            model_it->second.owner,
+            model_it->second.index,
+            parameters,
+        };
+    }
+
+    return {
+        0,
+        gfx_interpolation_matrix_address(addr),
+        parameters,
+    };
+}
+
+static bool gfx_interpolation_matrices_are_related(const InterpolationMatrix& previous,
+                                                    const InterpolationMatrix& current) {
+    float translation_delta_sq = 0.f;
+
+    for (int row = 0; row < 4; row++) {
+        for (int column = 0; column < 4; column++) {
+            if (!std::isfinite(previous.m[row][column]) || !std::isfinite(current.m[row][column])) {
+                return false;
+            }
+
+            const float delta = current.m[row][column] - previous.m[row][column];
+
+            if (row == 3 && column < 3) {
+                translation_delta_sq += delta * delta;
+            } else if (std::fabs(delta) > 6.f) {
+                return false;
+            }
+        }
+    }
+
+    // A changed allocation pattern or a real teleport must snap rather than
+    // sweep an unrelated object across the screen.
+    return translation_delta_sq < 1000000.f;
+}
+
+static void gfx_interpolate_matrix(uint8_t parameters, const int32_t* addr, float matrix[4][4]) {
+    if (!frame_interpolation.enabled || (parameters & G_MTX_PROJECTION)) {
+        return;
+    }
+
+    const InterpolationMatrixKey key = gfx_interpolation_matrix_key(parameters, addr);
+
+    if (frame_interpolation.new_game_frame) {
+        InterpolationMatrix& current = frame_interpolation.current[key];
+        memcpy(current.m, matrix, sizeof(current.m));
+    }
+
+    const auto previous_it = frame_interpolation.previous.find(key);
+    const auto current_it = frame_interpolation.current.find(key);
+
+    if (previous_it == frame_interpolation.previous.end()
+            || current_it == frame_interpolation.current.end()
+            || !gfx_interpolation_matrices_are_related(previous_it->second, current_it->second)) {
+        return;
+    }
+
+    for (int row = 0; row < 4; row++) {
+        for (int column = 0; column < 4; column++) {
+            matrix[row][column] = previous_it->second.m[row][column]
+                    + (current_it->second.m[row][column] - previous_it->second.m[row][column])
+                    * frame_interpolation.alpha;
+        }
+    }
+}
+
+static void gfx_begin_frame_interpolation(void) {
+    if (!frame_interpolation.enabled || !frame_interpolation.new_game_frame) {
+        return;
+    }
+
+    // Reuse both maps' buckets; allocating them again every 60 Hz tick would
+    // create the kind of browser main-thread hitch this path is avoiding.
+    frame_interpolation.previous.swap(frame_interpolation.current);
+    frame_interpolation.current.clear();
+}
+
+extern "C" void gfx_reset_frame_interpolation(void);
+
+extern "C" void gfx_begin_game_frame_interpolation(void) {
+    frame_interpolation.model_matrices.clear();
+}
+
+extern "C" void gfx_register_interpolation_model(const void *matrices, uint32_t count, const void *owner) {
+    const uintptr_t base = (uintptr_t)matrices;
+
+    if (!base || !owner) {
+        return;
+    }
+
+    for (uint32_t index = 0; index < count; index++) {
+        frame_interpolation.model_matrices[base + index * sizeof(InterpolationMatrix)] = {
+            (uintptr_t)owner,
+            index,
+        };
+    }
+}
+
+extern "C" void gfx_set_frame_interpolation(bool enabled, bool new_game_frame, float alpha,
+                                              uintptr_t pool_base, uint32_t pool_stride) {
+    if (!enabled || !pool_base || !pool_stride) {
+        gfx_reset_frame_interpolation();
+        return;
+    }
+
+    if (frame_interpolation.pool_base != pool_base || frame_interpolation.pool_stride != pool_stride) {
+        frame_interpolation.previous.clear();
+        frame_interpolation.current.clear();
+    }
+
+    frame_interpolation.enabled = true;
+    frame_interpolation.new_game_frame = new_game_frame;
+    frame_interpolation.alpha = alpha < 0.f ? 0.f : (alpha > 1.f ? 1.f : alpha);
+    frame_interpolation.pool_base = pool_base;
+    frame_interpolation.pool_stride = pool_stride;
+}
+
+extern "C" void gfx_reset_frame_interpolation(void) {
+    frame_interpolation.enabled = false;
+    frame_interpolation.new_game_frame = false;
+    frame_interpolation.alpha = 0.f;
+    frame_interpolation.pool_base = 0;
+    frame_interpolation.pool_stride = 0;
+    frame_interpolation.previous.clear();
+    frame_interpolation.current.clear();
+    frame_interpolation.model_matrices.clear();
+}
+#endif
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
@@ -1841,6 +2033,10 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     memcpy(matrix, addr, sizeof(matrix));
 #endif
     }
+
+#ifdef PLATFORM_WEB
+    gfx_interpolate_matrix(parameters, addr, matrix);
+#endif
 
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
@@ -4270,6 +4466,10 @@ extern "C" void gfx_run(Gfx* commands) {
         return;
     }
     dropped_frame = false;
+
+#ifdef PLATFORM_WEB
+    gfx_begin_frame_interpolation();
+#endif
 
     gfx_rapi->update_framebuffer_parameters(0, gfx_current_window_dimensions.width,
                                             gfx_current_window_dimensions.height, 1, false, true, true,

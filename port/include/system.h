@@ -50,6 +50,9 @@ void sysMemFree(void *ptr);
 
 // hns is specified in 100ns units
 void sysSleep(const s64 hns);
+#ifdef PLATFORM_WEB
+void sysWaitForAnimationFrame(void);
+#endif
 
 // yield CPU if supported (e.g. during a busy loop)
 void sysCpuRelax(void);

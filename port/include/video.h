@@ -21,6 +21,14 @@ void videoStartFrame(void);
 void videoSubmitCommands(Gfx *cmds);
 void videoClearScreen(void);
 void videoEndFrame(void);
+#ifdef PLATFORM_WEB
+s32 videoGetDecoupledRendering(void);
+void videoSetDecoupledRendering(s32 enabled);
+void videoBeginGameFrameInterpolation(void);
+void videoRegisterInterpolationModel(const void *matrices, u32 count, const void *owner);
+s32 videoReplayLastFrame(f32 alpha);
+void videoDiscardReplayFrame(void);
+#endif
 
 void *videoGetWindowHandle(void);
 

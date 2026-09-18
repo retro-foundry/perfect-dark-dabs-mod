@@ -11702,6 +11702,14 @@ void bgunRender(Gfx **gdlptr)
 				}
 			}
 
+#ifdef PLATFORM_WEB
+			// The first-person gun and hand share this matrix allocation. Associate
+			// it with the persistent hand so interpolation does not confuse a reused
+			// allocation with a different frame's matrices.
+			videoRegisterInterpolationModel(hand->gunmodel.matrices,
+					hand->gunmodel.definition->nummatrices, hand);
+#endif
+
 			// Render the gun
 			modelRender(&renderdata, &hand->gunmodel);
 

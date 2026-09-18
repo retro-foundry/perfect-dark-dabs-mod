@@ -479,6 +479,12 @@ void sysSleep(const s64 hns)
 #endif
 }
 
+#ifdef PLATFORM_WEB
+EM_ASYNC_JS(void, sysWaitForAnimationFrame, (), {
+	await new Promise(resolve => requestAnimationFrame(resolve));
+});
+#endif
+
 void sysCpuRelax(void)
 {
 	DO_YIELD();

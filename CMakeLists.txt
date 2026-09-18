@@ -542,9 +542,9 @@ add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(EMSCRIPTEN)
-  # The game keeps its original synchronous control flow. sysSleep() is the
-  # single browser yield point, so Asyncify can return control to the event
-  # loop without a platform state machine in the decompiled game loop.
+	# The game keeps its original synchronous control flow. sysSleep() and the
+	# decoupled renderer's requestAnimationFrame wait use Asyncify to return
+	# control to the browser without a platform state machine in game code.
   # menuResolveText() distinguishes language IDs from function pointers at
   # 0x5a00. WebAssembly function pointers are table indices, so keep the
   # table above that boundary just like native code addresses are.

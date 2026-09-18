@@ -75,6 +75,7 @@
 #include "data.h"
 #include "types.h"
 #include "system.h"
+#include "video.h"
 #include "record.h"
 #include "texpack.h"
 #include "assetdump.h"
@@ -608,6 +609,11 @@ void mainLoop(void)
 		}
 
 		gfxReset();
+#ifdef PLATFORM_WEB
+		// Display lists and matrices live in stage memory. Never replay one
+		// across a stage reset.
+		videoDiscardReplayFrame();
+#endif
 		joyReset();
 		dhudReset();
 		zbufReset(g_StageNum);
@@ -618,6 +624,26 @@ void mainLoop(void)
 
 		while (g_MainChangeToStageNum < 0) {
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
+#ifdef PLATFORM_WEB
+			if (videoGetDecoupledRendering()) {
+				// frametimeCalculate rounds elapsed time to authored 60 Hz ticks
+				// and carries the remainder. Waiting for this exact boundary keeps
+				// it from sleeping inside mainTick on the browser's main thread.
+				const s32 tickcycles = CYCLES_PER_FRAME / 2 - g_Vars.lostframetime60t;
+
+				if (tickcycles <= 0 || cycles >= tickcycles) {
+					videoBeginGameFrameInterpolation();
+					schedStartFrame(&g_Sched);
+					mainTick();
+					schedEndFrame(&g_Sched);
+				} else {
+					videoReplayLastFrame((f32)cycles / tickcycles);
+				}
+
+				sysWaitForAnimationFrame();
+				continue;
+			}
+#endif
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				schedStartFrame(&g_Sched);
 				mainTick();

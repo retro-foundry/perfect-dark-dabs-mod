@@ -21,6 +21,9 @@
 #include "game/modoptions.h"
 #include "xblamesh.h"
 #endif
+#ifdef PLATFORM_WEB
+#include "video.h"
+#endif
 
 /**
  * -- Model Definitions --
@@ -3582,6 +3585,14 @@ void modelRender(struct modelrenderdata *renderdata, struct model *model)
 	u32 type;
 	struct modelnode *node = model->definition->rootnode;
 
+#ifdef PLATFORM_WEB
+	if (model->chr != NULL) {
+		// Persistent props and characters keep their model address while their
+		// matrix allocation alternates between the two graphics pools.
+		videoRegisterInterpolationModel(model->matrices, model->definition->nummatrices, model);
+	}
+#endif
+
 	gSPSegment(renderdata->gdl++, SPSEGMENT_MODEL_MTX, osVirtualToPhysical(model->matrices));
 
 	while (node) {
@@ -4282,6 +4293,11 @@ void modelInit(struct model *model, struct modeldef *modeldef, u32 *rwdatas, boo
 	model->scale = 1;
 	model->attachedtomodel = NULL;
 	model->attachedtonode = NULL;
+#ifdef PLATFORM_WEB
+	// The union is assigned by persistent props and characters after modelInit.
+	// Leaving transient models unowned keeps them out of identity interpolation.
+	model->chr = NULL;
+#endif
 #ifndef PLATFORM_N64
 	model->headspotnode = NULL;
 #endif

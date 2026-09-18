@@ -364,6 +364,12 @@ The canvas follows the tab and keeps the nearest common display aspect: 16:9,
 and its WebGL backing buffer is resized to match so the game renders directly
 at the displayed size.
 
+Browser builds enable **Decoupled Rendering** by default in the extended video
+settings. Game logic stays on the original 60 Hz clock while intermediate
+display frames interpolate the previous and current camera/model transforms.
+This is separate from **Uncap Tickrate**, which runs game logic more often and
+remains experimental.
+
 ## Anything not listed here
 
 Controls and rebinding, PAL/JPN and Nintendo Switch builds, video and audio

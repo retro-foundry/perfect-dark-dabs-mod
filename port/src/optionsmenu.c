@@ -1001,6 +1001,21 @@ static MenuItemHandlerResult menuhandlerUncapTickrate(s32 operation, struct menu
 	return 0;
 }
 
+#ifdef PLATFORM_WEB
+static MenuItemHandlerResult menuhandlerDecoupledRendering(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return videoGetDecoupledRendering();
+	case MENUOP_SET:
+		videoSetDecoupledRendering(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+#endif
+
 static MenuItemHandlerResult menuhandlerCenterHUD(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static const char *opts[] = {
@@ -1169,6 +1184,16 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		0,
 		menuhandlerUncapTickrate,
 	},
+#ifdef PLATFORM_WEB
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Decoupled Rendering",
+		0,
+		menuhandlerDecoupledRendering,
+	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
