@@ -8,6 +8,10 @@
 #ifndef PLATFORM_N64
 #include "mod.h"
 #endif
+#ifdef PLATFORM_WEB
+#include "game/camera.h"
+#include "video.h"
+#endif
 
 /**
  * Room matrices
@@ -187,6 +191,32 @@ s32 roomTouchMtx(s32 roomnum)
 Gfx *roomApplyMtx(Gfx *gdl, s32 roomnum)
 {
 	s32 index = roomTouchMtx(roomnum);
+
+#ifdef PLATFORM_WEB
+	// Decoupled rendering matches a matrix across ticks by where it lives.
+	// Neither of the two a room is drawn under can be found that way:
+	//
+	// - The room's own matrix lives in an LRU slot, so its address names the
+	//   slot and not the room. A slot handed to another room would have been
+	//   read as that room moving, and every slot is reallocated whenever the
+	//   world is rebased.
+	// - The camera is in the projection here, not the modelview: the room's
+	//   matrix holds nothing but the room's offset, and bg.c loads
+	//   camGetOrthogonalMtxL() - the view times the perspective - as the
+	//   projection. A model carries the camera in its modelview instead, so
+	//   without naming this one the world stood still between ticks while
+	//   every model, and every reflection worked out in the space its
+	//   modelview defines, moved with the interpolated camera.
+	//
+	// Both are named for the room the world is drawn relative to as well, so
+	// a rebase snaps rather than sliding the whole world over a tick.
+	{
+		const u32 base = (u32)g_RoomMtxBaseRooms[index];
+
+		videoRegisterInterpolationMatrix(&g_RoomMtxMatrices[index], base, &g_Rooms[roomnum]);
+		videoRegisterInterpolationMatrix(camGetOrthogonalMtxL(), base, g_Vars.currentplayer);
+	}
+#endif
 
 	gSPMatrix(gdl++, &g_RoomMtxMatrices[index], G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
 

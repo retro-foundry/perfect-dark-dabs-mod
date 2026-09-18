@@ -190,6 +190,13 @@ void videoRegisterInterpolationModel(const void *matrices, u32 count, const void
 	}
 }
 
+void videoRegisterInterpolationMatrix(const void *matrix, u32 index, const void *owner)
+{
+	if (vidDecoupledRendering) {
+		gfx_register_interpolation_matrix(matrix, index, owner);
+	}
+}
+
 s32 videoReplayLastFrame(f32 alpha)
 {
 	if (!initDone || !vidDecoupledRendering || !vidReplayCommands) {

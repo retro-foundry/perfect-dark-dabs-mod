@@ -26,6 +26,7 @@ s32 videoGetDecoupledRendering(void);
 void videoSetDecoupledRendering(s32 enabled);
 void videoBeginGameFrameInterpolation(void);
 void videoRegisterInterpolationModel(const void *matrices, u32 count, const void *owner);
+void videoRegisterInterpolationMatrix(const void *matrix, u32 index, const void *owner);
 s32 videoReplayLastFrame(f32 alpha);
 void videoDiscardReplayFrame(void);
 #endif

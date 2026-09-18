@@ -1955,23 +1955,34 @@ static uintptr_t gfx_interpolation_matrix_address(const int32_t* addr) {
     return address;
 }
 
-static InterpolationMatrixKey gfx_interpolation_matrix_key(uint8_t parameters, const int32_t* addr) {
+/**
+ * The key this matrix is remembered under, and whether something named it.
+ *
+ * A registered matrix carries its own identity - the model or the room it
+ * belongs to - which holds wherever the allocation moves to. Everything else
+ * falls back to the address, which for the graphics pool is its offset within
+ * a side and for anything else is the address itself.
+ */
+static bool gfx_interpolation_matrix_key(uint8_t parameters, const int32_t* addr,
+                                         InterpolationMatrixKey* out) {
     const auto model_it = frame_interpolation.model_matrices.find((uintptr_t)addr);
 
     if (model_it != frame_interpolation.model_matrices.end()
             && model_it->second.generation == frame_interpolation.game_frame_generation) {
-        return {
+        *out = {
             model_it->second.owner,
             model_it->second.index,
             parameters,
         };
+        return true;
     }
 
-    return {
+    *out = {
         0,
         gfx_interpolation_matrix_address(addr),
         parameters,
     };
+    return false;
 }
 
 static bool gfx_interpolation_matrices_are_related(const InterpolationMatrix& previous,
@@ -1986,7 +1997,13 @@ static bool gfx_interpolation_matrices_are_related(const InterpolationMatrix& pr
 
             const float delta = current.m[row][column] - previous.m[row][column];
 
-            if (row == 3 && column < 3) {
+            // The whole of the last row, not just its first three columns:
+            // for a modelview the fourth is a constant 1 and this changes
+            // nothing, but the rooms' projection carries the camera, and
+            // there the fourth column is the eye's own distance along the
+            // view - thousands, moving by the player's speed every tick,
+            // which the element test below would refuse at a run.
+            if (row == 3) {
                 translation_delta_sq += delta * delta;
             } else if (std::fabs(delta) > 6.f) {
                 return false;
@@ -2000,11 +2017,26 @@ static bool gfx_interpolation_matrices_are_related(const InterpolationMatrix& pr
 }
 
 static void gfx_interpolate_matrix(uint8_t parameters, const int32_t* addr, float matrix[4][4]) {
-    if (!frame_interpolation.enabled || (parameters & G_MTX_PROJECTION)) {
+    if (!frame_interpolation.enabled) {
         return;
     }
 
-    const InterpolationMatrixKey key = gfx_interpolation_matrix_key(parameters, addr);
+    InterpolationMatrixKey key;
+    const bool registered = gfx_interpolation_matrix_key(parameters, addr, &key);
+
+    // A projection matrix is left alone unless something named it. The rooms
+    // are drawn with the camera in the projection (bg.c loads
+    // camGetOrthogonalMtxL(), which is the view times the perspective, while
+    // the room's own modelview holds nothing but the room's offset), so
+    // without that one the world stands still between ticks while every model
+    // - and every reflection worked out in the space its modelview defines -
+    // moves with the interpolated camera. The perspective the models are
+    // drawn under, and the menus' orthogonal matrices, are not named and keep
+    // their exact values.
+    if ((parameters & G_MTX_PROJECTION) && !registered) {
+        return;
+    }
+
     auto history_it = frame_interpolation.matrices.find(key);
 
     if (frame_interpolation.new_game_frame) {
@@ -2063,6 +2095,18 @@ extern "C" void gfx_begin_game_frame_interpolation(void) {
         frame_interpolation.model_matrices.clear();
         frame_interpolation.game_frame_generation = 1;
     }
+}
+
+extern "C" void gfx_register_interpolation_matrix(const void *matrix, uint32_t index, const void *owner) {
+    if (!matrix || !owner) {
+        return;
+    }
+
+    frame_interpolation.model_matrices[(uintptr_t)matrix] = {
+        (uintptr_t)owner,
+        index,
+        frame_interpolation.game_frame_generation,
+    };
 }
 
 extern "C" void gfx_register_interpolation_model(const void *matrices, uint32_t count, const void *owner) {

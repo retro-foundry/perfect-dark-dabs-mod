@@ -110,6 +110,7 @@ void gfx_set_frame_interpolation(bool enabled, bool new_game_frame, float alpha,
 		uintptr_t pool_base, uint32_t pool_stride);
 void gfx_begin_game_frame_interpolation(void);
 void gfx_register_interpolation_model(const void *matrices, uint32_t count, const void *owner);
+void gfx_register_interpolation_matrix(const void *matrix, uint32_t index, const void *owner);
 void gfx_reset_frame_interpolation(void);
 #endif
 void gfx_set_target_fps(int);

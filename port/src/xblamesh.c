@@ -48,6 +48,9 @@
 #include "objmesh.h"
 #include "modelpack.h"
 #include "roomsheen.h"
+#ifdef PLATFORM_WEB
+#include "video.h"
+#endif
 #include "game/bg.h"
 #include "game/dlights.h"
 #include "game/game_0b0fd0.h"
@@ -9415,6 +9418,23 @@ s32 xblaMeshRenderNode(struct modelrenderdata *renderdata, struct model *model,
 	// The divided copy is floats and says so; the bone's own matrix is one of
 	// the model's, which the game converts to s15.16 in place after listing
 	// the model, and is read the way every matrix of the game's is.
+#ifdef PLATFORM_WEB
+	// A float copy is made in the mesh's own frame arena rather than in the
+	// graphics pool, and the arena is a pair of chunk lists that alternate
+	// every tick, so the same allocation only comes round again two ticks
+	// later. Decoupled rendering matches a pool matrix by its offset within a
+	// side and everything else by its address, so a copy was never matched
+	// against the tick before it and every posed mesh - and the reflection
+	// worked out in the space its matrix defines - stood a whole tick apart
+	// from the model it belongs to. Named for the model and the node instead.
+	// The model's own matrices are named by modelRender(), so root is left as
+	// it is rather than given a second name here.
+	if (drawmtx && drawmtx != root) {
+		videoRegisterInterpolationMatrix(drawmtx,
+				0x80000000u | ((u32)(uintptr_t)node & 0x7fffffffu), model);
+	}
+#endif
+
 	if (drawmtx) {
 		gSPMatrix(renderdata->gdl++, osVirtualToPhysical(drawmtx),
 				G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW |
