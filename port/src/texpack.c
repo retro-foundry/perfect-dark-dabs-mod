@@ -3418,7 +3418,10 @@ static void texpackEnqueue(s32 slot, s32 texturenum)
 	jobs[slot].texturenum = texturenum;
 	jobs[slot].serial = ++jobSerial;
 	jobs[slot].reported = 0;
-	SDL_CondSignal(jobWake);
+
+	if (jobWake) {
+		SDL_CondSignal(jobWake);
+	}
 }
 
 static void texpackBacklogAdd(s32 texturenum)
@@ -3650,6 +3653,15 @@ void texpackTrace(FILE *f)
 	fprintf(f, "texpack: have replacements %d, %d in the index, decode thread %s\n",
 			texpackHaveReplacements(), numReplacements, jobThread ? "running" : "not running");
 
+#ifdef PLATFORM_WEB
+	for (s32 i = 0; i < TEXPACK_MAX_PENDING; i++) {
+		if (jobs[i].state >= 0 && jobs[i].state < 5) {
+			counts[jobs[i].state]++;
+		}
+	}
+
+	backlog = jobBacklogCount;
+#else
 	if (jobLock) {
 		SDL_LockMutex(jobLock);
 
@@ -3662,6 +3674,7 @@ void texpackTrace(FILE *f)
 		backlog = jobBacklogCount;
 		SDL_UnlockMutex(jobLock);
 	}
+#endif
 
 	fprintf(f, "texpack jobs: %d free, %d queued, %d decoding, %d ready, %d failed of %d slots, backlog %d; kept store %d images (%u MB), %u repeat requests answered, %u dropped to the budget\n",
 			counts[TEXPACK_JOB_FREE], counts[TEXPACK_JOB_QUEUED], counts[TEXPACK_JOB_DECODING],
@@ -3705,6 +3718,18 @@ static void texpackAsyncReset(void)
 
 	texpackAsyncShutdown();
 
+#ifdef PLATFORM_WEB
+	for (i = 0; i < TEXPACK_MAX_PENDING; i++) {
+		free(jobs[i].rgba);
+		jobs[i].rgba = NULL;
+		jobs[i].state = TEXPACK_JOB_FREE;
+	}
+
+	jobReadyBytes = 0;
+	texpackBacklogClear();
+	return;
+#endif
+
 	if (!jobLock) {
 		return;
 	}
@@ -3727,44 +3752,112 @@ static void texpackAsyncReset(void)
 /**
  * The web target deliberately does not use Emscripten pthreads: requiring the
  * cross-origin isolation headers for SharedArrayBuffer would make a plain
- * static server unable to run the build. Decode on the main thread there,
- * then put the result through the same kept stores the worker uses so cache
- * eviction never makes a replacement flicker back to the original.
+ * static server unable to run the build. A request is queued here and the
+ * browser decodes one image at the end of each texpackPollDecoded() instead.
+ * The next poll reports it, keeping decode and upload on separate frames and
+ * preventing a newly visible room from decoding every new image in one frame.
  */
 static u8 *texpackClaimDecodedWeb(s32 texturenum, s32 *outWidth, s32 *outHeight)
+{
+	u8 *rgba = NULL;
+	s32 free1 = -1;
+	s32 i;
+	static s32 logged;
+
+	if (!logged) {
+		logged = 1;
+		sysLogPrintf(LOG_NOTE, "texpack: decoding one replacement per browser frame");
+	}
+
+	for (i = 0; i < TEXPACK_MAX_PENDING; i++) {
+		if (jobs[i].state != TEXPACK_JOB_FREE && jobs[i].texturenum == texturenum) {
+			// Normally the poll moved a reported image into its kept store. If
+			// allocating that store failed, hand over the queue buffer instead
+			// so the replacement does not remain stuck behind the original.
+			if (jobs[i].state == TEXPACK_JOB_READY && jobs[i].reported) {
+				*outWidth = jobs[i].width;
+				*outHeight = jobs[i].height;
+
+				if (texturenum >= TEXPACK_FONT_ID_BASE && texturenum < TEXPACK_XBLA_ID_BASE) {
+					rgba = texpackGlyphCopy(texpackGlyphKeep(&jobs[i]), outWidth, outHeight);
+				} else {
+					struct texpackkept *k = texpackJobKeep(&jobs[i]);
+
+					if (k) {
+						rgba = texpackKeptCopy(k, outWidth, outHeight);
+					} else {
+						rgba = jobs[i].rgba;
+						jobReadyBytes -= texpackJobBytes(&jobs[i]);
+						jobs[i].rgba = NULL;
+						jobs[i].state = TEXPACK_JOB_FREE;
+					}
+				}
+			}
+
+			return rgba;
+		}
+
+		if (jobs[i].state == TEXPACK_JOB_FREE && free1 < 0) {
+			free1 = i;
+		}
+	}
+
+	if (free1 >= 0) {
+		texpackEnqueue(free1, texturenum);
+	} else {
+		texpackBacklogAdd(texturenum);
+	}
+
+	return NULL;
+}
+
+/** Decodes one queued image on the browser's main thread. */
+static void texpackDecodeOneWeb(void)
 {
 	const char *path = NULL;
 	const char *alphaPath = NULL;
 	s32 kind = TEXPACK_KIND_NATIVE;
 	s32 flip = 1;
+	s32 found = -1;
 	s32 width = 0;
 	s32 height = 0;
 	u8 *rgba;
-	static s32 logged;
+	s32 i;
 
-	if (texturenum >= TEXPACK_MOD_ID_BASE) {
-		const s32 num = texturenum - TEXPACK_MOD_ID_BASE;
+	for (i = 0; i < TEXPACK_MAX_PENDING; i++) {
+		if (jobs[i].state == TEXPACK_JOB_QUEUED) {
+			found = i;
+			break;
+		}
+	}
+
+	if (found < 0) {
+		return;
+	}
+
+	if (jobs[found].texturenum >= TEXPACK_MOD_ID_BASE) {
+		const s32 num = jobs[found].texturenum - TEXPACK_MOD_ID_BASE;
 		const struct texpacknumbered n = texpackNumbered(1);
 
 		path = n.paths ? n.paths[num] : NULL;
 		alphaPath = n.alphaPaths ? n.alphaPaths[num] : NULL;
 		kind = n.kinds ? n.kinds[num] : TEXPACK_KIND_NATIVE;
 		flip = n.flip ? n.flip[num] : 1;
-	} else if (texturenum >= TEXPACK_XBLA_ID_BASE) {
-		const s32 record = texturenum - TEXPACK_XBLA_ID_BASE;
+	} else if (jobs[found].texturenum >= TEXPACK_XBLA_ID_BASE) {
+		const s32 record = jobs[found].texturenum - TEXPACK_XBLA_ID_BASE;
 
 		path = xblaReplacePaths ? xblaReplacePaths[record] : NULL;
 		flip = xblaReplaceFlip ? xblaReplaceFlip[record] : 1;
-	} else if (texturenum >= TEXPACK_FONT_ID_BASE) {
+	} else if (jobs[found].texturenum >= TEXPACK_FONT_ID_BASE) {
 		s32 outline;
 		s32 font;
 		s32 index;
 
-		texpackFontFromJobId(texturenum, &outline, &font, &index);
+		texpackFontFromJobId(jobs[found].texturenum, &outline, &font, &index);
 		path = fontReplacePaths[outline][font][index];
 		flip = fontReplaceFlip[outline][font][index];
 	} else {
-		const s32 num = texturenum;
+		const s32 num = jobs[found].texturenum;
 		const struct texpacknumbered n = texpackNumbered(0);
 
 		path = n.paths ? n.paths[num] : NULL;
@@ -3773,43 +3866,19 @@ static u8 *texpackClaimDecodedWeb(s32 texturenum, s32 *outWidth, s32 *outHeight)
 		flip = n.flip ? n.flip[num] : 1;
 	}
 
+	jobs[found].state = TEXPACK_JOB_DECODING;
 	rgba = path ? texpackDecodeReplacement(path, alphaPath, kind, flip, &width, &height) : NULL;
 
-	if (!rgba) {
-		return NULL;
+	if (rgba) {
+		jobs[found].rgba = rgba;
+		jobs[found].width = width;
+		jobs[found].height = height;
+		jobs[found].state = TEXPACK_JOB_READY;
+		jobReadyBytes += texpackJobBytes(&jobs[found]);
+		texpackTrimReady();
+	} else {
+		jobs[found].state = TEXPACK_JOB_FAILED;
 	}
-
-	if (!logged) {
-		logged = 1;
-		sysLogPrintf(LOG_NOTE, "texpack: decoding replacements synchronously in the browser");
-	}
-
-	if (texturenum >= TEXPACK_FONT_ID_BASE && texturenum < TEXPACK_XBLA_ID_BASE) {
-		struct texpackglyph *glyph;
-		s32 outline;
-		s32 font;
-		s32 index;
-
-		texpackFontFromJobId(texturenum, &outline, &font, &index);
-		glyph = &fontDecoded[outline][font][index];
-		free(glyph->rgba);
-		glyph->rgba = rgba;
-		glyph->width = width;
-		glyph->height = height;
-		return texpackGlyphCopy(glyph, outWidth, outHeight);
-	}
-
-	{
-		struct texpackkept *k = texpackKeptInsert(texpackKeptIndex(texturenum), rgba, width, height);
-
-		if (k) {
-			return texpackKeptCopy(k, outWidth, outHeight);
-		}
-	}
-
-	*outWidth = width;
-	*outHeight = height;
-	return rgba;
 }
 #endif
 
@@ -3928,11 +3997,13 @@ s32 texpackPollDecoded(s32 *out, s32 max)
 	s32 count = 0;
 	s32 i;
 
+#ifndef PLATFORM_WEB
 	if (!jobThread || !jobLock) {
 		return 0;
 	}
 
 	SDL_LockMutex(jobLock);
+#endif
 
 	// Kept by a claim since the last call - see keptReport.
 	for (i = 0; keptReportCount > 0 && count < max && i < NUM_TEXTURES; i++) {
@@ -4027,7 +4098,13 @@ s32 texpackPollDecoded(s32 *out, s32 max)
 	// Slots were freed above, and by the claims made since the last call.
 	texpackBacklogRefill();
 
+#ifdef PLATFORM_WEB
+	// Leave the result READY until the next poll. Decode and the full RGBA copy,
+	// texture upload and mip generation then cannot all land in the same frame.
+	texpackDecodeOneWeb();
+#else
 	SDL_UnlockMutex(jobLock);
+#endif
 
 	return count;
 }

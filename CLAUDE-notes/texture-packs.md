@@ -63,6 +63,15 @@ decoding at once, not what gets decoded.
 
 JPEG is decoded the same way, on the same thread - see the format note below.
 
+The browser is the exception to the worker thread. Emscripten pthreads require
+cross-origin isolation headers that plain static hosting does not provide, so
+web requests use the same queue cooperatively. `texpackPollDecoded()` decodes
+at most one queued image per browser frame and reports it on the following
+frame. This keeps decode separate from its RGBA copy, upload and mip generation,
+and prevents all the textures introduced by a room from decoding in one frame.
+The original texture remains in the renderer cache while each job is pending,
+just as it does while the native worker is busy.
+
 ## Decoded stage textures are kept, not handed over
 
 A decoded image used to be handed to the renderer and forgotten, so every miss
