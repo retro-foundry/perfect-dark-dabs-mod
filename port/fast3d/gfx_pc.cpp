@@ -160,6 +160,38 @@ static std::map<ColorCombinerKey, struct ColorCombiner> color_combiner_pool;
 static std::map<ColorCombinerKey, struct ColorCombiner>::iterator prev_combiner = color_combiner_pool.end();
 
 static uint8_t* tex_upload_buffer = nullptr;
+static size_t tex_upload_buffer_capacity;
+
+static void gfx_ensure_tex_upload_buffer(size_t required) {
+    if (required <= tex_upload_buffer_capacity) {
+        return;
+    }
+
+    // A full 4 KiB of N64 TMEM expands to at most 32 KiB of RGBA32. Grow
+    // geometrically beyond that for port-supplied textures instead of
+    // reserving four bytes for every texel the host GPU could theoretically
+    // accept (256 MiB on an 8K WebGL implementation).
+    size_t capacity = tex_upload_buffer_capacity ? tex_upload_buffer_capacity : 32 * 1024;
+
+    while (capacity < required) {
+        if (capacity > std::numeric_limits<size_t>::max() / 2) {
+            capacity = required;
+            break;
+        }
+
+        capacity *= 2;
+    }
+
+    void* resized = realloc(tex_upload_buffer, capacity);
+
+    if (!resized) {
+        sysFatalError("Could not allocate %zu bytes for texture conversion", capacity);
+        return;
+    }
+
+    tex_upload_buffer = (uint8_t*)resized;
+    tex_upload_buffer_capacity = capacity;
+}
 
 static struct RSP {
     float modelview_matrix_stack[11][4][4];
@@ -221,6 +253,34 @@ struct LoadedTexture {
     uint32_t glyph;      // gDPSetFontGlyphEXT, 0 when this is not a font glyph
     struct RawTexMetadata raw_tex_metadata;
 };
+
+static void gfx_prepare_texture_decode(const LoadedTexture& loaded_texture, uint8_t siz) {
+    size_t expansion;
+
+    switch (siz) {
+    case G_IM_SIZ_4b:
+        expansion = 8;
+        break;
+    case G_IM_SIZ_8b:
+        expansion = 4;
+        break;
+    case G_IM_SIZ_16b:
+        expansion = 2;
+        break;
+    case G_IM_SIZ_32b:
+        expansion = 1;
+        break;
+    default:
+        return;
+    }
+
+    if (loaded_texture.size_bytes > std::numeric_limits<size_t>::max() / expansion) {
+        sysFatalError("Texture conversion size overflows address space");
+        return;
+    }
+
+    gfx_ensure_tex_upload_buffer((size_t)loaded_texture.size_bytes * expansion);
+}
 
 static struct RDP {
     // Set by gDPSetFontGlyphEXT and taken by the next gDPSetTextureImage, which
@@ -1378,6 +1438,7 @@ static uint8_t* gfx_pad_replacement(uint8_t* rep, int32_t* rep_width, int32_t* r
 static void gfx_decode_original(int tile, const LoadedTexture& loaded_texture, uint8_t fmt, uint8_t siz) {
     const int saved_scale = import_enhance_scale;
 
+    gfx_prepare_texture_decode(loaded_texture, siz);
     import_decode_only = true;
     import_enhance_scale = 1;
     last_upload_width = 0;
@@ -1724,6 +1785,7 @@ static void import_texture(int i, int tile, bool importReplacement) {
     // padded past the tile is clamped rather than wrapped, since what lies
     // over its far edge is padding and not the other side of the picture.
     gfx_set_import_enhance(tile, loaded_texture, tex_row_bytes, siz);
+    gfx_prepare_texture_decode(loaded_texture, siz);
 
     if (fmt == G_IM_FMT_RGBA) {
         if (siz == G_IM_SIZ_16b) {
@@ -1839,10 +1901,18 @@ struct InterpolationMatrixKeyHash {
 struct InterpolationModelMatrix {
     uintptr_t owner;
     uint32_t index;
+    uint64_t generation;
 };
 
 struct InterpolationMatrix {
     float m[4][4];
+};
+
+struct InterpolationMatrixHistory {
+    InterpolationMatrix previous;
+    InterpolationMatrix current;
+    uint64_t previous_generation = 0;
+    uint64_t current_generation = 0;
 };
 
 struct FrameInterpolationState {
@@ -1851,8 +1921,8 @@ struct FrameInterpolationState {
     float alpha = 0.f;
     uintptr_t pool_base = 0;
     uint32_t pool_stride = 0;
-    std::unordered_map<InterpolationMatrixKey, InterpolationMatrix, InterpolationMatrixKeyHash> previous;
-    std::unordered_map<InterpolationMatrixKey, InterpolationMatrix, InterpolationMatrixKeyHash> current;
+    uint64_t game_frame_generation = 0;
+    std::unordered_map<InterpolationMatrixKey, InterpolationMatrixHistory, InterpolationMatrixKeyHash> matrices;
     std::unordered_map<uintptr_t, InterpolationModelMatrix> model_matrices;
 };
 
@@ -1876,7 +1946,8 @@ static uintptr_t gfx_interpolation_matrix_address(const int32_t* addr) {
 static InterpolationMatrixKey gfx_interpolation_matrix_key(uint8_t parameters, const int32_t* addr) {
     const auto model_it = frame_interpolation.model_matrices.find((uintptr_t)addr);
 
-    if (model_it != frame_interpolation.model_matrices.end()) {
+    if (model_it != frame_interpolation.model_matrices.end()
+            && model_it->second.generation == frame_interpolation.game_frame_generation) {
         return {
             model_it->second.owner,
             model_it->second.index,
@@ -1922,45 +1993,64 @@ static void gfx_interpolate_matrix(uint8_t parameters, const int32_t* addr, floa
     }
 
     const InterpolationMatrixKey key = gfx_interpolation_matrix_key(parameters, addr);
+    auto history_it = frame_interpolation.matrices.find(key);
 
     if (frame_interpolation.new_game_frame) {
-        InterpolationMatrix& current = frame_interpolation.current[key];
-        memcpy(current.m, matrix, sizeof(current.m));
+        if (history_it == frame_interpolation.matrices.end()) {
+            history_it = frame_interpolation.matrices.try_emplace(key).first;
+        }
+
+        InterpolationMatrixHistory& history = history_it->second;
+
+        if (history.current_generation != frame_interpolation.game_frame_generation) {
+            if (history.current_generation != 0
+                    && history.current_generation + 1 == frame_interpolation.game_frame_generation) {
+                history.previous = history.current;
+                history.previous_generation = history.current_generation;
+            } else {
+                history.previous_generation = 0;
+            }
+
+            history.current_generation = frame_interpolation.game_frame_generation;
+        }
+
+        memcpy(history.current.m, matrix, sizeof(history.current.m));
     }
 
-    const auto previous_it = frame_interpolation.previous.find(key);
-    const auto current_it = frame_interpolation.current.find(key);
+    if (history_it == frame_interpolation.matrices.end()) {
+        return;
+    }
 
-    if (previous_it == frame_interpolation.previous.end()
-            || current_it == frame_interpolation.current.end()
-            || !gfx_interpolation_matrices_are_related(previous_it->second, current_it->second)) {
+    const InterpolationMatrixHistory& history = history_it->second;
+
+    if (history.current_generation != frame_interpolation.game_frame_generation
+            || history.previous_generation + 1 != history.current_generation
+            || !gfx_interpolation_matrices_are_related(history.previous, history.current)) {
         return;
     }
 
     for (int row = 0; row < 4; row++) {
         for (int column = 0; column < 4; column++) {
-            matrix[row][column] = previous_it->second.m[row][column]
-                    + (current_it->second.m[row][column] - previous_it->second.m[row][column])
+            matrix[row][column] = history.previous.m[row][column]
+                    + (history.current.m[row][column] - history.previous.m[row][column])
                     * frame_interpolation.alpha;
         }
     }
 }
 
-static void gfx_begin_frame_interpolation(void) {
-    if (!frame_interpolation.enabled || !frame_interpolation.new_game_frame) {
-        return;
-    }
-
-    // Reuse both maps' buckets; allocating them again every 60 Hz tick would
-    // create the kind of browser main-thread hitch this path is avoiding.
-    frame_interpolation.previous.swap(frame_interpolation.current);
-    frame_interpolation.current.clear();
-}
-
 extern "C" void gfx_reset_frame_interpolation(void);
 
 extern "C" void gfx_begin_game_frame_interpolation(void) {
-    frame_interpolation.model_matrices.clear();
+    // Entries are retained for the stage and tagged instead of cleared. An
+    // unordered_map clear preserves buckets but still frees every node, which
+    // made each 60 Hz tick rebuild both interpolation registries from scratch.
+    frame_interpolation.game_frame_generation++;
+
+    if (frame_interpolation.game_frame_generation == 0) {
+        frame_interpolation.matrices.clear();
+        frame_interpolation.model_matrices.clear();
+        frame_interpolation.game_frame_generation = 1;
+    }
 }
 
 extern "C" void gfx_register_interpolation_model(const void *matrices, uint32_t count, const void *owner) {
@@ -1974,6 +2064,7 @@ extern "C" void gfx_register_interpolation_model(const void *matrices, uint32_t 
         frame_interpolation.model_matrices[base + index * sizeof(InterpolationMatrix)] = {
             (uintptr_t)owner,
             index,
+            frame_interpolation.game_frame_generation,
         };
     }
 }
@@ -1986,8 +2077,7 @@ extern "C" void gfx_set_frame_interpolation(bool enabled, bool new_game_frame, f
     }
 
     if (frame_interpolation.pool_base != pool_base || frame_interpolation.pool_stride != pool_stride) {
-        frame_interpolation.previous.clear();
-        frame_interpolation.current.clear();
+        frame_interpolation.matrices.clear();
     }
 
     frame_interpolation.enabled = true;
@@ -2003,8 +2093,8 @@ extern "C" void gfx_reset_frame_interpolation(void) {
     frame_interpolation.alpha = 0.f;
     frame_interpolation.pool_base = 0;
     frame_interpolation.pool_stride = 0;
-    frame_interpolation.previous.clear();
-    frame_interpolation.current.clear();
+    frame_interpolation.game_frame_generation = 0;
+    frame_interpolation.matrices.clear();
     frame_interpolation.model_matrices.clear();
 }
 #endif
@@ -4289,12 +4379,6 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
         segmentPointers[i] = 0;
     }
 
-    if (tex_upload_buffer == nullptr) {
-        // We cap texture max to 8k, because why would you need more?
-        int max_tex_size = std::min(8192, gfx_rapi->get_max_texture_size());
-        tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
-    }
-
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
     rsp.lookat_enabled = true;
@@ -4305,6 +4389,9 @@ extern "C" void gfx_destroy(void) {
 
     // Texture cache and loaded textures store references to Resources which need to be unreferenced.
     gfx_texture_cache_clear();
+    free(tex_upload_buffer);
+    tex_upload_buffer = nullptr;
+    tex_upload_buffer_capacity = 0;
 }
 
 extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
@@ -4466,10 +4553,6 @@ extern "C" void gfx_run(Gfx* commands) {
         return;
     }
     dropped_frame = false;
-
-#ifdef PLATFORM_WEB
-    gfx_begin_frame_interpolation();
-#endif
 
     gfx_rapi->update_framebuffer_parameters(0, gfx_current_window_dimensions.width,
                                             gfx_current_window_dimensions.height, 1, false, true, true,
