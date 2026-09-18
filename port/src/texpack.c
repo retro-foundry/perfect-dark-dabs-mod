@@ -40,6 +40,10 @@
 #include "versioninfo.h"
 #include <SDL.h>
 
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
+
 #define TEXPACK_DUMP_DIR_NAME "texture-dumps"
 
 // Matches the "textures" directory modTextureLoad() already reads its %04x.bin
@@ -3810,6 +3814,33 @@ static u8 *texpackClaimDecodedWeb(s32 texturenum, s32 *outWidth, s32 *outHeight)
 
 	return NULL;
 }
+
+#ifdef PLATFORM_WEB
+EMSCRIPTEN_KEEPALIVE u32 webTexpackKeptBytes(void)
+{
+	return keptBytes;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webTexpackKeptCount(void)
+{
+	return keptCount;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webTexpackKeptHits(void)
+{
+	return keptHits;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webTexpackKeptEvicted(void)
+{
+	return keptEvicted;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webTexpackBacklogCount(void)
+{
+	return jobBacklogCount;
+}
+#endif
 
 /** Decodes one queued image on the browser's main thread. */
 static void texpackDecodeOneWeb(void)

@@ -25,6 +25,10 @@
 
 #include "platform.h"
 
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
+
 #include "gfx_pc.h"
 #include "gfx_cc.h"
 #include "gfx_window_manager_api.h"
@@ -1927,6 +1931,14 @@ struct FrameInterpolationState {
 };
 
 static FrameInterpolationState frame_interpolation;
+
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t webGfxInterpolationMatrixCount(void) {
+    return (uint32_t)frame_interpolation.matrices.size();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t webGfxInterpolationModelMatrixCount(void) {
+    return (uint32_t)frame_interpolation.model_matrices.size();
+}
 
 static uintptr_t gfx_interpolation_matrix_address(const int32_t* addr) {
     const uintptr_t address = (uintptr_t)addr;

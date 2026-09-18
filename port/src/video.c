@@ -15,6 +15,10 @@
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
 
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
+
 extern u32 g_GfxLogStats;
 
 #ifdef PLATFORM_NSWITCH
@@ -48,6 +52,8 @@ static s32 vidFramerateLimit = 0;
 #ifdef PLATFORM_WEB
 static s32 vidDecoupledRendering = true;
 static Gfx *vidReplayCommands = NULL;
+static u32 vidGameFrames;
+static u32 vidReplayFrames;
 extern u8 *g_VtxBuffers[3];
 #endif
 
@@ -144,6 +150,7 @@ void videoSubmitCommands(Gfx *cmds)
 			gfx_set_frame_interpolation(true, true, 0.f, (uintptr_t)g_VtxBuffers[0],
 					(u32)(g_VtxBuffers[1] - g_VtxBuffers[0]));
 			vidReplayCommands = cmds;
+			vidGameFrames++;
 		} else {
 			gfx_reset_frame_interpolation();
 			vidReplayCommands = NULL;
@@ -194,8 +201,19 @@ s32 videoReplayLastFrame(f32 alpha)
 			(u32)(g_VtxBuffers[1] - g_VtxBuffers[0]));
 	gfx_run(vidReplayCommands);
 	++dlcount;
+	vidReplayFrames++;
 	videoEndFrame();
 	return true;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webVideoGameFrames(void)
+{
+	return vidGameFrames;
+}
+
+EMSCRIPTEN_KEEPALIVE u32 webVideoReplayFrames(void)
+{
+	return vidReplayFrames;
 }
 
 void videoDiscardReplayFrame(void)
