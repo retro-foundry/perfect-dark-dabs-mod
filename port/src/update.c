@@ -55,7 +55,7 @@
 // server's decision rather than becoming a version comparison written here.
 // Dev names its tag because the rolling prerelease is one tag that the release
 // job keeps moving, and "latest" would never point at it.
-#define UPDATE_REPO "https://github.com/DabDavis/perfect-dark-dabs-mod/releases"
+#define UPDATE_REPO "https://github.com/retro-foundry/perfect-dark-dabs-mod/releases"
 #define UPDATE_URL_STABLE UPDATE_REPO "/latest/download"
 #define UPDATE_URL_DEV    UPDATE_REPO "/download/dabs-mod-dev"
 

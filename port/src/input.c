@@ -12,6 +12,9 @@
 #include "utils.h"
 #include "system.h"
 #include "fs.h"
+#ifdef PLATFORM_WEB
+#include <emscripten/html5.h>
+#endif
 
 #if !SDL_VERSION_ATLEAST(2, 0, 14)
 // this was added in 2.0.14
@@ -88,6 +91,16 @@ static s32 mouseLocked = 0;
 static s32 mouseLockMode = MLOCK_AUTO;
 static u64 mouseCursorTime = 0;
 static s32 mouseShowCursor = 1;
+#ifdef PLATFORM_WEB
+static s32 mouseWebPointerLockReady = 0;
+
+EM_JS(void, inputWebGetRelativeMouseState, (s32 *dx, s32 *dy), {
+	HEAP32[dx >> 2] = Module['pdMouseDeltaX'] | 0;
+	HEAP32[dy >> 2] = Module['pdMouseDeltaY'] | 0;
+	Module['pdMouseDeltaX'] = 0;
+	Module['pdMouseDeltaY'] = 0;
+});
+#endif
 
 static f32 mouseSensX = 2.5f;
 static f32 mouseSensY = 2.5f;
@@ -884,6 +897,12 @@ static inline void inputLoadBinds(void)
 
 s32 inputInit(void)
 {
+	Uint32 inputSubsystems = SDL_INIT_GAMECONTROLLER;
+
+#ifndef PLATFORM_WEB
+	inputSubsystems |= SDL_INIT_HAPTIC;
+#endif
+
 	// Set SDL hints before initializing the controller subsystem.
 	if (useHIDAPI) {
 #if SDL_VERSION_ATLEAST(2, 0, 12)
@@ -925,8 +944,13 @@ s32 inputInit(void)
 #endif
 	}
 
-	if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC)) {
-		SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC);
+	// Emscripten SDL2 has a Gamepad API backend but is built without haptics.
+	// Asking for both there initializes the controller and then rolls it back
+	// when haptic initialization fails.
+	const Uint32 missingSubsystems = inputSubsystems & ~SDL_WasInit(inputSubsystems);
+	if (missingSubsystems && SDL_InitSubSystem(missingSubsystems) != 0) {
+		sysLogPrintf(LOG_ERROR, "input: SDL controller init error: %s", SDL_GetError());
+		return -1;
 	}
 
 	// try to load controller db from an external file in the save folder
@@ -1097,6 +1121,35 @@ static inline void inputUpdateMouse(void)
 	s32 mdx = 0;
 	s32 mdy = 0;
 	SDL_GetRelativeMouseState(&mdx, &mdy);
+#ifdef PLATFORM_WEB
+	s32 webdx = 0;
+	s32 webdy = 0;
+	inputWebGetRelativeMouseState(&webdx, &webdy);
+
+	if (mouseLocked) {
+		EmscriptenPointerlockChangeEvent status;
+		const s32 pointerlockactive = emscripten_get_pointerlock_status(&status) == EMSCRIPTEN_RESULT_SUCCESS
+				&& status.isActive && strcmp(status.id, "canvas") == 0;
+
+		// SDL relative mode records the requested state, while browser pointer
+		// lock can be lost asynchronously. Discard absolute motion accumulated
+		// during that gap and the first sample after the lock is reacquired.
+		if (!pointerlockactive || !mouseWebPointerLockReady) {
+			mdx = 0;
+			mdy = 0;
+		} else {
+			// Browser movement is already expressed in CSS pixels. SDL's web
+			// backend scales it when its window and CSS canvas sizes differ,
+			// which makes sensitivity jump during resize/fullscreen transitions.
+			mdx = webdx;
+			mdy = webdy;
+		}
+
+		mouseWebPointerLockReady = pointerlockactive;
+	} else {
+		mouseWebPointerLockReady = 0;
+	}
+#endif
 	if (mouseLocked) {
 		mouseDX = mdx;
 		mouseDY = mdy;
@@ -1436,7 +1489,14 @@ s32 inputButtonPressed(s32 idx, u32 contbtn)
 
 void inputLockMouse(s32 lock)
 {
-	mouseLocked = !!lock;
+	const s32 locked = !!lock;
+
+#ifdef PLATFORM_WEB
+	if (mouseLocked != locked) {
+		mouseWebPointerLockReady = 0;
+	}
+#endif
+	mouseLocked = locked;
 	SDL_SetRelativeMouseMode(mouseLocked);
 }
 
@@ -1672,6 +1732,8 @@ s32 inputTextHandler(char *out, const u32 outSize, s32 *curCol, s32 oskCharsOnly
 		}
 	} else if (key == VK_ESCAPE) {
 		return -1;
+	} else if (key == VK_RETURN) {
+		return 1;
 	}
 
 	return 0;

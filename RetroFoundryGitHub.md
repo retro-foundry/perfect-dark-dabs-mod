@@ -7,17 +7,17 @@ and before cutting a release.
 ## Where this lives
 
 ```
-origin    git@github.com:DabDavis/perfect-dark-dabs-mod.git   (public)
+origin    git@github.com:retro-foundry/perfect-dark-dabs-mod.git   (public)
 upstream  https://github.com/perfect-dark-pc-port/perfect_dark.git
 ```
 
-`gh` is authenticated as **DabDavis** over ssh, so `git push` and `gh release`
-both work without a prompt.
+Git access uses the SSH key configured for the Retro Foundry repository. GitHub
+CLI commands should target the repository explicitly or set it as the default.
 
 **Set the default repository in a fresh clone**, or `gh` reads the wrong one:
 
 ```sh
-gh repo set-default DabDavis/perfect-dark-dabs-mod
+gh repo set-default retro-foundry/perfect-dark-dabs-mod
 ```
 
 With no default set and two remotes, `gh` picks by remote *name* against a
@@ -27,7 +27,7 @@ comes back is green runs of `C/C++ CI`, which is a workflow name this repository
 also has, inherited from upstream in `c-cpp.yml` — so nothing about the output
 looks foreign, and it was read once as "the push built fine". The setting lives
 in `.git/config` as `remote.origin.gh-resolved`, which is local to the clone and
-comes back the moment anyone clones again; `-R DabDavis/perfect-dark-dabs-mod`
+comes back the moment anyone clones again; `-R retro-foundry/perfect-dark-dabs-mod`
 says it per command.
 
 **`dabs-mod` is the repository's default branch and the repository is public.**
@@ -124,7 +124,7 @@ view ... ||` guard sees the release already there and only uploads the assets.
 (Creating it first, before the tag exists, would be a second push event.) No
 assets to upload. Existing tags: `v3.8.0`, `v3.7.0`, `v3.6.0`, `v3.5.0`, `v3.4.0`, `v3.3.3`, `v3.2.2`, `v3.2.1`, `v3.2.0`, `v3.1.3`, `v3.1.2`, `v3.1.1`, `v3.1.0`, `v3.0.0`, `v2.0.4`, `v2.0.3`, `v2.0.2`, `v2.0.1`, `v2.0.0`.
 
-**A push that changes only `CLAUDE.md`, `CLAUDE-notes/` or `DabDavisGitHub.md` does not build.**
+**A push that changes only `CLAUDE.md`, `CLAUDE-notes/` or `RetroFoundryGitHub.md` does not build.**
 Four builds and a fresh executable offered to every dev-channel player is too
 much to ask for a file that is neither in the download nor in the binary. The
 `paths-ignore` naming those is deliberately that short: `README.md` and

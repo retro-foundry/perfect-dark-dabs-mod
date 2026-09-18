@@ -2625,6 +2625,22 @@ static const char *texpackPacksDir(void)
 
 	state = -1;
 
+#ifdef PLATFORM_WEB
+	// The launcher expands a dropped pack here in MEMFS. Keeping it outside
+	// /save matters: IDBFS would persist hundreds of megabytes that the player
+	// explicitly supplies again, while the ROM follows the same tab-only rule.
+	strncpy(dir, "/texture-packs", sizeof(dir) - 1);
+	dir[sizeof(dir) - 1] = '\0';
+
+	if (fsScanDir(dir, NULL, NULL) < 0) {
+		sysLogPrintf(LOG_ERROR, "texpack: browser texture-pack directory is missing");
+		return NULL;
+	}
+
+	state = 1;
+	return dir;
+#endif
+
 	if (fsChooseOutputDir(TEXPACK_PACKS_DIR, rel, sizeof(rel)) != 0) {
 		sysLogPrintf(LOG_ERROR, "texpack: nowhere to put %s that can be written",
 				TEXPACK_PACKS_DIR);
@@ -3707,6 +3723,96 @@ static void texpackAsyncReset(void)
 	SDL_UnlockMutex(jobLock);
 }
 
+#ifdef PLATFORM_WEB
+/**
+ * The web target deliberately does not use Emscripten pthreads: requiring the
+ * cross-origin isolation headers for SharedArrayBuffer would make a plain
+ * static server unable to run the build. Decode on the main thread there,
+ * then put the result through the same kept stores the worker uses so cache
+ * eviction never makes a replacement flicker back to the original.
+ */
+static u8 *texpackClaimDecodedWeb(s32 texturenum, s32 *outWidth, s32 *outHeight)
+{
+	const char *path = NULL;
+	const char *alphaPath = NULL;
+	s32 kind = TEXPACK_KIND_NATIVE;
+	s32 flip = 1;
+	s32 width = 0;
+	s32 height = 0;
+	u8 *rgba;
+	static s32 logged;
+
+	if (texturenum >= TEXPACK_MOD_ID_BASE) {
+		const s32 num = texturenum - TEXPACK_MOD_ID_BASE;
+		const struct texpacknumbered n = texpackNumbered(1);
+
+		path = n.paths ? n.paths[num] : NULL;
+		alphaPath = n.alphaPaths ? n.alphaPaths[num] : NULL;
+		kind = n.kinds ? n.kinds[num] : TEXPACK_KIND_NATIVE;
+		flip = n.flip ? n.flip[num] : 1;
+	} else if (texturenum >= TEXPACK_XBLA_ID_BASE) {
+		const s32 record = texturenum - TEXPACK_XBLA_ID_BASE;
+
+		path = xblaReplacePaths ? xblaReplacePaths[record] : NULL;
+		flip = xblaReplaceFlip ? xblaReplaceFlip[record] : 1;
+	} else if (texturenum >= TEXPACK_FONT_ID_BASE) {
+		s32 outline;
+		s32 font;
+		s32 index;
+
+		texpackFontFromJobId(texturenum, &outline, &font, &index);
+		path = fontReplacePaths[outline][font][index];
+		flip = fontReplaceFlip[outline][font][index];
+	} else {
+		const s32 num = texturenum;
+		const struct texpacknumbered n = texpackNumbered(0);
+
+		path = n.paths ? n.paths[num] : NULL;
+		alphaPath = n.alphaPaths ? n.alphaPaths[num] : NULL;
+		kind = n.kinds ? n.kinds[num] : TEXPACK_KIND_NATIVE;
+		flip = n.flip ? n.flip[num] : 1;
+	}
+
+	rgba = path ? texpackDecodeReplacement(path, alphaPath, kind, flip, &width, &height) : NULL;
+
+	if (!rgba) {
+		return NULL;
+	}
+
+	if (!logged) {
+		logged = 1;
+		sysLogPrintf(LOG_NOTE, "texpack: decoding replacements synchronously in the browser");
+	}
+
+	if (texturenum >= TEXPACK_FONT_ID_BASE && texturenum < TEXPACK_XBLA_ID_BASE) {
+		struct texpackglyph *glyph;
+		s32 outline;
+		s32 font;
+		s32 index;
+
+		texpackFontFromJobId(texturenum, &outline, &font, &index);
+		glyph = &fontDecoded[outline][font][index];
+		free(glyph->rgba);
+		glyph->rgba = rgba;
+		glyph->width = width;
+		glyph->height = height;
+		return texpackGlyphCopy(glyph, outWidth, outHeight);
+	}
+
+	{
+		struct texpackkept *k = texpackKeptInsert(texpackKeptIndex(texturenum), rgba, width, height);
+
+		if (k) {
+			return texpackKeptCopy(k, outWidth, outHeight);
+		}
+	}
+
+	*outWidth = width;
+	*outHeight = height;
+	return rgba;
+}
+#endif
+
 /**
  * Hands over a decoded image if one is waiting, and queues the work if not.
  *
@@ -3726,6 +3832,10 @@ static u8 *texpackClaimDecoded(s32 texturenum, s32 *outWidth, s32 *outHeight)
 		keptHits++;
 		return texpackKeptCopy(&kept[keepIndex], outWidth, outHeight);
 	}
+
+#ifdef PLATFORM_WEB
+	return texpackClaimDecodedWeb(texturenum, outWidth, outHeight);
+#endif
 
 	texpackAsyncStart();
 

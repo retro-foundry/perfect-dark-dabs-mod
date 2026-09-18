@@ -47,7 +47,7 @@ image base mingw links at, and the exe still carries its DWARF.
 **Symbolise against the binary that crashed, not the one in `build-win/`.** A
 local build of a nearby commit answers with plausible function names for every
 frame and all of them are wrong. Download the release the player is on
-(`gh release download v3.3.3 -R DabDavis/perfect-dark-dabs-mod -p
+(`gh release download v3.3.3 -R retro-foundry/perfect-dark-dabs-mod -p
 'pd.x86_64-windows.exe'`) and check the answer before believing it: every frame
 but the innermost is a **return** address, so the bytes just before it must be a
 `call`. Disassemble with `--start-address` a little below the address and

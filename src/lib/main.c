@@ -70,9 +70,13 @@
 #include "data.h"
 #include "types.h"
 
-// mainLoop calls rngSetSeed with a u32 argument,
-// but the function takes a u64 so an incorrect declaration is needed.
+// Matching native builds preserve the original ABI mismatch. WebAssembly has
+// typed function calls, so its declaration must match rng_c.c exactly.
+#ifdef PLATFORM_WEB
+void rngSetSeed(u64 seed);
+#else
 void rngSetSeed(u32 seed);
+#endif
 
 bool var8005d9b0 = false;
 s32 g_StageNum = STAGE_TITLE;

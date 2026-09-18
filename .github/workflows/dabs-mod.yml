@@ -22,7 +22,7 @@ on:
     paths-ignore:
       - 'CLAUDE.md'
       - 'CLAUDE-notes/**'
-      - 'DabDavisGitHub.md'
+      - 'RetroFoundryGitHub.md'
   workflow_dispatch:
 
 env:

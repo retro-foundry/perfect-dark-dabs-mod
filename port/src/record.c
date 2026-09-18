@@ -2351,6 +2351,12 @@ void recordTick(void)
  */
 static s32 recordResolveEnabled(void)
 {
+#ifdef PLATFORM_WEB
+	// Browser builds cannot spawn the external ffmpeg process this subsystem
+	// writes to. Keep its existing setting and menu seam, but make the feature
+	// unavailable instead of offering a recording that cannot be completed.
+	recordEnabled = 0;
+#else
 	if (recordEnabled < 0) {
 #ifdef PLATFORM_WIN32
 		recordEnabled = codecName[0] && strcmp(codecName, RECORD_DEFAULT_CODEC) ? 1 : 0;
@@ -2358,6 +2364,7 @@ static s32 recordResolveEnabled(void)
 		recordEnabled = 1;
 #endif
 	}
+#endif
 
 	return recordEnabled;
 }
@@ -2369,7 +2376,11 @@ s32 recordIsEnabled(void)
 
 void recordSetEnabled(s32 enabled)
 {
+#ifdef PLATFORM_WEB
+	recordEnabled = 0;
+#else
 	recordEnabled = enabled ? 1 : 0;
+#endif
 }
 
 #ifdef PLATFORM_WIN32

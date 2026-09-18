@@ -86,7 +86,11 @@
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
 
+#ifdef PLATFORM_WEB
+void rngSetSeed(u64 seed);
+#else
 void rngSetSeed(u32 seed);
+#endif
 
 bool var8005d9b0 = false;
 s32 g_StageNum = STAGE_TITLE;
@@ -622,6 +626,14 @@ void mainLoop(void)
 			if (g_TickExtraSleep) {
 				sysSleep(EXTRA_SLEEP_TIME);
 			}
+#ifdef PLATFORM_WEB
+			else {
+				// A native build may busy-poll here. The browser must always
+				// return to its event loop, including with Extra Sleep disabled
+				// in a persisted config.
+				sysSleep(0);
+			}
+#endif
 		}
 
 		lvStop();

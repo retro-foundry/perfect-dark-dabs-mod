@@ -15,6 +15,10 @@
 #include "system.h"
 #include "crashreport.h"
 
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
+
 #ifdef PLATFORM_WIN32
 
 #include <windows.h>
@@ -459,7 +463,12 @@ void sysMemFree(void *ptr)
 
 void sysSleep(const s64 hns)
 {
-#ifdef PLATFORM_WIN32
+#ifdef PLATFORM_WEB
+	// Browser code must regularly return to the event loop. The shortest sleep
+	// Emscripten can schedule is one millisecond, which also replaces the
+	// native loop's 100 microsecond polling sleep.
+	emscripten_sleep(hns > 0 ? (int)((hns + 9999) / 10000) : 0);
+#elif defined(PLATFORM_WIN32)
 	static LARGE_INTEGER li;
 	li.QuadPart = -hns;
 	SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE);

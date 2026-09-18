@@ -43,12 +43,12 @@ notes are read when their area comes up.
 - **A rule or colour a mod's code changes that is not a weapon's** — mods.md, "The tail": `game/modrules.h` holds it with the stock default, a modconfig block sets it through one setter in mod.c, both importers read it; the branch `lua-pipeline` is the Lua experiment of 2026-09-07, kept and not merged. mods.md, "A GE-X tester's seven reports" (2026-09-13, importer 32): a jump table in rodata is *data* to modcodediff (the third person guns, the sights); GE-X's green menus are dialog **type bytes**, not the palette; a boot re-imports every stale mod, so never run two after a version bump
 - **Projects we can do, not started** — [project-list.md](CLAUDE-notes/project-list.md): work the user has judged worth doing, with what is already known; first entry (2026-09-14) is rendering the scene more than once a frame for real reflections, where `gfx_run` is 59% of the game thread and building the lists ~3%, so the extra passes must be made cheap first (measure the rooms/chrs split, rooms on the GPU, posed models under one more matrix), and a render-only pass must not rerun the visibility flags the AI reads
 
-**[DabDavisGitHub.md](DabDavisGitHub.md)** is the companion to this file: the
+**[RetroFoundryGitHub.md](RetroFoundryGitHub.md)** is the companion to this file: the
 GitHub remote, how commits are written, how a push becomes a release, and how the
 stable and dev channels reach a player. Read it before pushing or tagging —
 `dabs-mod` is a public default branch and a push to it rebuilds what every
 dev-channel player's Check for Updates points at. A push that changes only
-`CLAUDE.md`, `CLAUDE-notes/` or `DabDavisGitHub.md` does not build.
+`CLAUDE.md`, `CLAUDE-notes/` or `RetroFoundryGitHub.md` does not build.
 
 When a session gets something wrong that the code could not have told it, write
 it down: a new note, or a section in the one for its area, and a line here.

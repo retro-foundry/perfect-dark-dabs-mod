@@ -13,6 +13,8 @@ endif()
 
 project(pd C CXX)
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 include(TargetArch)
 include(FindPkgConfig)
 include(AssetUtils)
@@ -35,12 +37,35 @@ endif()
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
 option(FORCE_CROSSCOMPILE "Force cross compiling" NO)
 
+# SDL2 (FetchContent on native; Emscripten uses -sUSE_SDL=2). Fetch it before
+# this directory adds the decompilation's global compiler flags so they do not
+# leak into SDL's own targets. Switch uses devkitPro's platform SDL2 instead.
+if(NOT EMSCRIPTEN AND NOT NINTENDO_SWITCH)
+  include(FetchContent)
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  set(SDL_TEST OFF CACHE BOOL "" FORCE)
+  set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+
+  FetchContent_Declare(
+    SDL2
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-2.30.11
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(SDL2)
+endif()
+
 # Determine target arch
 
-target_architecture(TARGET_ARCH)
-if(TARGET_ARCH STREQUAL "i386")
-  # for historical reasons
-  set(TARGET_ARCH "i686")
+if(EMSCRIPTEN)
+  set(TARGET_ARCH "wasm32")
+else()
+  target_architecture(TARGET_ARCH)
+  if(TARGET_ARCH STREQUAL "i386")
+    # for historical reasons
+    set(TARGET_ARCH "i686")
+  endif()
 endif()
 
 # TODO
@@ -58,7 +83,9 @@ message(STATUS "Target arch: ${TARGET_ARCH}")
 
 # Determine target OS and platform identifier ($arch-$os)
 
-if(WIN32)
+if(EMSCRIPTEN)
+  set(TARGET_OS "web")
+elseif(WIN32)
   # Windows
   set(TARGET_OS "windows")
 elseif(APPLE)
@@ -251,24 +278,39 @@ endif()
 
 set(LIBS )
 
-# SDL2
-find_package(SDL2 REQUIRED)
-if(NINTENDO_SWITCH)
-  if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
-    # sometimes FindSDL2 just wants us to suffer and does not set these
-    set(SDL2_LIBRARY "SDL2")
-    set(SDL2_INCLUDE_DIR "${DEVKITPRO}/portlibs/switch/include/SDL2")
+# Emscripten provides SDL2, zlib and WebGL as ports. Native targets fetch the
+# same pinned SDL2 source on every host, except Switch where devkitPro provides
+# the platform port.
+if(EMSCRIPTEN)
+  add_compile_options(-sUSE_SDL=2 -sUSE_ZLIB=1)
+else()
+  if(NINTENDO_SWITCH)
+    find_package(SDL2 REQUIRED)
+    if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
+      # sometimes FindSDL2 just wants us to suffer and does not set these
+      set(SDL2_LIBRARY "SDL2")
+      set(SDL2_INCLUDE_DIR "${DEVKITPRO}/portlibs/switch/include/SDL2")
+    endif()
+    include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
+    list(APPEND LIBS "${SDL2_LIBRARY}")
+  else()
+    # The old FindSDL2 path included SDL2main where the platform needs it.
+    # Preserve that startup contract while linking the fetched static library.
+    if(TARGET SDL2::SDL2main)
+      list(APPEND LIBS SDL2::SDL2main)
+    endif()
+    list(APPEND LIBS SDL2::SDL2-static)
   endif()
-endif()
-include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
-list(APPEND LIBS "${SDL2_LIBRARY}")
 
-# ZLib
-find_package(ZLIB REQUIRED)
+  # ZLib
+  find_package(ZLIB REQUIRED)
+endif()
 
 # What Ghost Trials reaches the ghost server over. See the note at the top of
 # port/src/ghostnet.c for why this is two different things.
-if(WIN32)
+if(EMSCRIPTEN)
+  message(STATUS "browser build - Ghost Trials networking disabled")
+elseif(WIN32)
   # WinHTTP, which is part of Windows. Nothing to find and nothing to ship -
   # no libcurl, none of the dozen DLLs under it, and no CA bundle question,
   # because certificates are the operating system's business.
@@ -296,13 +338,15 @@ else()
       "on Debian or Ubuntu.")
   endif()
 endif()
-if(ZLIB_INCLUDE_DIR)
-  include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
+if(NOT EMSCRIPTEN)
+  if(ZLIB_INCLUDE_DIR)
+    include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
+  endif()
+  list(APPEND LIBS "${ZLIB_LIBRARY}")
 endif()
-list(APPEND LIBS "${ZLIB_LIBRARY}")
 
 # GL
-if(NOT GL_LIBRARY)
+if(NOT EMSCRIPTEN AND NOT GL_LIBRARY)
   if(WIN32)
     set(GL_LIBRARY opengl32)
   elseif(NINTENDO_SWITCH)
@@ -313,19 +357,23 @@ if(NOT GL_LIBRARY)
     set(GL_LIBRARY GL)
   endif()
 endif()
-list(APPEND LIBS "${GL_LIBRARY}")
+if(NOT EMSCRIPTEN)
+  list(APPEND LIBS "${GL_LIBRARY}")
+endif()
 
 # Platform-specific extra libs
-if(NOT EXTRA_LIBRARIES)
-  if(WIN32)
-    set(EXTRA_LIBRARIES dbghelp -static-libstdc++)
-  elseif(NINTENDO_SWITCH)
-    set(EXTRA_LIBRARIES stdc++ pthread)
-  else()
-    set(EXTRA_LIBRARIES stdc++ m dl)
+if(NOT EMSCRIPTEN)
+  if(NOT EXTRA_LIBRARIES)
+    if(WIN32)
+      set(EXTRA_LIBRARIES dbghelp -static-libstdc++)
+    elseif(NINTENDO_SWITCH)
+      set(EXTRA_LIBRARIES stdc++ pthread)
+    else()
+      set(EXTRA_LIBRARIES stdc++ m dl)
+    endif()
   endif()
+  list(APPEND LIBS "${EXTRA_LIBRARIES}")
 endif()
-list(APPEND LIBS "${EXTRA_LIBRARIES}")
 
 # Sources
 
@@ -493,6 +541,32 @@ add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
+if(EMSCRIPTEN)
+  # The game keeps its original synchronous control flow. sysSleep() is the
+  # single browser yield point, so Asyncify can return control to the event
+  # loop without a platform state machine in the decompiled game loop.
+  # menuResolveText() distinguishes language IDs from function pointers at
+  # 0x5a00. WebAssembly function pointers are table indices, so keep the
+  # table above that boundary just like native code addresses are.
+  target_link_options(pd PRIVATE
+    -Wl,--table-base=23040
+    -sUSE_SDL=2
+    -sUSE_ZLIB=1
+    -sMIN_WEBGL_VERSION=2
+    -sMAX_WEBGL_VERSION=2
+    -sFULL_ES3=1
+    -sGL_ENABLE_GET_PROC_ADDRESS=1
+    -sASYNCIFY=1
+    -sALLOW_MEMORY_GROWTH=1
+    -sINITIAL_MEMORY=268435456
+    -sSTACK_SIZE=8388608
+    -sFORCE_FILESYSTEM=1
+    -sENVIRONMENT=web
+    -lidbfs.js
+    "--shell-file=${CMAKE_SOURCE_DIR}/dist/web/shell.html"
+  )
+  set_target_properties(pd PROPERTIES OUTPUT_NAME "pd" SUFFIX ".html")
+endif()
 if(WIN32)
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()

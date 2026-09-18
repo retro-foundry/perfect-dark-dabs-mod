@@ -339,6 +339,8 @@ bool ghostnetIsSignedIn(void)
 	return same;
 }
 
+#endif // PD_GHOST_NET
+
 /**
  * Pull one value out of a flat JSON object.
  *
@@ -443,6 +445,8 @@ bool ghostnetJsonField(const char *json, const char *end, const char *key,
 
 	return true;
 }
+
+#ifdef PD_GHOST_NET
 
 #define GHOSTNET_AGENT "pd-dabs-mod-ghost/1"
 

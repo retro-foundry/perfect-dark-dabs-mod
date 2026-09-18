@@ -1,8 +1,8 @@
 # Dab's Mod
 
-**[Download](https://github.com/DabDavis/perfect-dark-dabs-mod/releases/latest)**
+**[Download](https://github.com/retro-foundry/perfect-dark-dabs-mod/releases/latest)**
 — Windows, Linux and macOS. You supply the ROM; see [You need a ROM](#you-need-a-rom).
-There is also a [rolling dev build](https://github.com/DabDavis/perfect-dark-dabs-mod/releases/tag/dabs-mod-dev)
+There is also a [rolling dev build](https://github.com/retro-foundry/perfect-dark-dabs-mod/releases/tag/dabs-mod-dev)
 of the newest commit, if you want fixes before they reach a release.
 
 A fork of the [Perfect Dark PC port](https://github.com/perfect-dark-pc-port/perfect_dark),
@@ -317,20 +317,52 @@ or pass `--savedir <path>`.
 Same as the stock port:
 
 ```sh
-git clone --recursive https://github.com/DabDavis/perfect-dark-dabs-mod.git
+git clone --recursive git@github.com:retro-foundry/perfect-dark-dabs-mod.git
 cd perfect-dark-dabs-mod
 cmake -G"Unix Makefiles" -Bbuild .
 cmake --build build -j8
 ```
 
-You need gcc/g++ 10+, cmake, python3, SDL2 2.0.12+, libGL and zlib. Windows
-builds go through MSYS2's MINGW64 prompt; see the
+You need gcc/g++ 10+, cmake, python3, libGL and zlib. CMake fetches the pinned
+SDL2 source on the first native configure, so that configure needs network
+access; Switch continues to use devkitPro's SDL2 port. Windows builds go
+through MSYS2's MINGW64 prompt; see the
 [upstream README](https://github.com/perfect-dark-pc-port/perfect_dark#building)
-for the package list.
+for the package list, omitting its SDL2 development package.
 
 Non-debug builds compile at `-Og`, not `-O2` — that's upstream's setting, not an
 oversight, and the official port binaries are built the same way. `-O2` breaks
 decompiled code that relies on undefined behaviour.
+
+### Browser build
+
+Install and activate the Emscripten SDK, then build the web target:
+
+```sh
+emcmake cmake -G Ninja -B build-web .
+cmake --build build-web -j8
+emrun build-web/pd.html
+```
+
+Open the served page and drop a `Perfect Dark (USA) (Rev 1)` z64 ROM (or a ZIP
+containing it), an optional existing `pd.ini`, and optionally a ZIP texture pack
+onto it. They can be dropped together or one at a time before pressing **Start
+Game**. A dropped texture pack is selected and enabled automatically. The ROM
+and texture pack remain in memory for that tab only. `pd.ini` is restored from
+localStorage and can be downloaded with **Save pd.ini** on the launcher; game
+saves remain in the browser's IndexedDB.
+Controllers use the browser Gamepad API. Connect the controller and press one
+of its buttons after opening the page so the browser makes it available.
+Pointer-locked mouse input uses the browser's raw movement, so resizing the
+canvas or entering fullscreen does not change mouse sensitivity.
+F11 or Alt+Enter toggles canvas fullscreen. Browser builds use F11 for
+fullscreen because their external-encoder video recording is unavailable.
+WebGL 2 is required.
+
+The canvas follows the tab and keeps the nearest common display aspect: 16:9,
+16:10, 3:2, 4:3, 21:9 or 32:9. It is centred with letterboxing where necessary,
+and its WebGL backing buffer is resized to match so the game renders directly
+at the displayed size.
 
 ## Anything not listed here
 

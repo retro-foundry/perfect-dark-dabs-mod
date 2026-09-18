@@ -42,6 +42,10 @@
 #include "utils.h"
 #include "gebean.h"
 
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
+
 u32 g_OsMemSize = 0;
 // Upstream's 16 is the N64's 8MB with room to spare. This fork spends memory the
 // N64 never had: eighty simulants rather than eight - each one a head modeldef of
@@ -74,6 +78,26 @@ s32 g_TickExtraSleep = true;
 s32 g_SkipIntro = false;
 
 s32 g_FileAutoSelect = -1;
+
+#ifdef PLATFORM_WEB
+static s32 g_WebConfigReady = false;
+
+EMSCRIPTEN_KEEPALIVE s32 webSaveConfig(void)
+{
+	if (!g_WebConfigReady) {
+		return -1;
+	}
+
+	inputSaveBinds();
+
+	if (!configSave(CONFIG_PATH)) {
+		sysLogPrintf(LOG_ERROR, "could not save browser pd.ini");
+		return 0;
+	}
+
+	return 1;
+}
+#endif
 
 extern s32 g_StageNum;
 
@@ -223,6 +247,10 @@ int main(int argc, const char **argv)
 	// before romdataInit(), which is what goes looking for the files it holds.
 	modListApplySelection();
 	inputInit();
+
+#ifdef PLATFORM_WEB
+	g_WebConfigReady = true;
+#endif
 
 	// Akimbo Triggers rewrites controller binds when it is switched; applying
 	// it again here mends a config written by a build that bound it differently
