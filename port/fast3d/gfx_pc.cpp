@@ -99,6 +99,38 @@ static std::map<ColorCombinerKey, struct ColorCombiner> color_combiner_pool;
 static std::map<ColorCombinerKey, struct ColorCombiner>::iterator prev_combiner = color_combiner_pool.end();
 
 static uint8_t* tex_upload_buffer = nullptr;
+static size_t tex_upload_buffer_capacity = 0;
+
+// The buffer a tile is decoded into before it is uploaded. It used to be
+// allocated once at the largest size the GPU could accept, which is 256MB on an
+// 8K implementation - more than a wasm heap starts with. Grown to fit instead:
+// a full 4KB of N64 TMEM expands to at most 32KB of RGBA32, so the first
+// allocation covers every tile the game itself loads.
+static void gfx_grow_tex_upload_buffer(size_t required) {
+    if (required <= tex_upload_buffer_capacity) {
+        return;
+    }
+
+    size_t capacity = tex_upload_buffer_capacity ? tex_upload_buffer_capacity : 32 * 1024;
+
+    while (capacity < required) {
+        if (capacity > std::numeric_limits<size_t>::max() / 2) {
+            capacity = required;
+            break;
+        }
+
+        capacity *= 2;
+    }
+
+    void* grown = realloc(tex_upload_buffer, capacity);
+
+    if (!grown) {
+        sysFatalError("Could not allocate %zu bytes for texture conversion", capacity);
+    }
+
+    tex_upload_buffer = (uint8_t*)grown;
+    tex_upload_buffer_capacity = capacity;
+}
 
 static struct RSP {
     float modelview_matrix_stack[11][4][4];
@@ -150,6 +182,25 @@ struct LoadedTexture {
     uint32_t tex_flags;
     struct RawTexMetadata raw_tex_metadata;
 };
+
+// How far the tile about to be decoded expands into that buffer.
+static void gfx_reserve_tex_upload_buffer(const struct LoadedTexture& loaded_texture, uint8_t siz) {
+    size_t expansion;
+
+    switch (siz) {
+    case G_IM_SIZ_4b:  expansion = 8; break;
+    case G_IM_SIZ_8b:  expansion = 4; break;
+    case G_IM_SIZ_16b: expansion = 2; break;
+    case G_IM_SIZ_32b: expansion = 1; break;
+    default: return;
+    }
+
+    if (loaded_texture.size_bytes > std::numeric_limits<size_t>::max() / expansion) {
+        sysFatalError("Texture conversion size overflows address space");
+    }
+
+    gfx_grow_tex_upload_buffer((size_t)loaded_texture.size_bytes * expansion);
+}
 
 static struct RDP {
     uint16_t palette[256];
@@ -903,6 +954,8 @@ static void import_texture(int i, int tile, bool importReplacement) {
     if (gfx_texture_cache_lookup(i, key)) {
         return;
     }
+
+    gfx_reserve_tex_upload_buffer(loaded_texture, siz);
 
     if (fmt == G_IM_FMT_RGBA) {
         if (siz == G_IM_SIZ_16b) {
@@ -2567,12 +2620,6 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
         segmentPointers[i] = 0;
     }
 
-    if (tex_upload_buffer == nullptr) {
-        // We cap texture max to 8k, because why would you need more?
-        int max_tex_size = std::min(8192, gfx_rapi->get_max_texture_size());
-        tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
-    }
-
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
     rsp.lookat_enabled = true;
@@ -2583,6 +2630,10 @@ extern "C" void gfx_destroy(void) {
 
     // Texture cache and loaded textures store references to Resources which need to be unreferenced.
     gfx_texture_cache_clear();
+
+    free(tex_upload_buffer);
+    tex_upload_buffer = nullptr;
+    tex_upload_buffer_capacity = 0;
 }
 
 extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {

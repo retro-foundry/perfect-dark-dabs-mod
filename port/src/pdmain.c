@@ -77,7 +77,11 @@
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
 
+#ifdef PLATFORM_WEB
+void rngSetSeed(u64 seed);
+#else
 void rngSetSeed(u32 seed);
+#endif
 
 bool var8005d9b0 = false;
 s32 g_StageNum = STAGE_TITLE;

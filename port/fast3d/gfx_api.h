@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #endif
 
+#include "platform.h"
 #include "gfx_rendering_api.h"
 #include "gfx_window_manager_api.h"
 
